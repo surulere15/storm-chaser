@@ -1,0 +1,71 @@
+name: Storm Monitoring (Every 5 Minutes)
+
+# GitHub Actions Free Tier: 2,000 minutes/month
+# Running every 5 minutes = 288 runs/day = 8,640 runs/month
+# Each run takes ~30 seconds = 4,320 minutes/month
+# Fits within free tier with room to spare!
+
+on:
+  schedule:
+    # Run every 5 minutes
+    - cron: '*/5 * * * *'
+
+  # Allow manual trigger
+  workflow_dispatch:
+
+jobs:
+  monitor-storms:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          cache: 'pip'
+
+      - name: Install dependencies
+        run: |
+          pip install requests python-dotenv
+
+      - name: Run storm monitor
+        env:
+          DATABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_KEY: ${{ secrets.SUPABASE_KEY }}
+        run: |
+          python backend/storm_monitor.py
+
+      - name: Check for severe storms
+        id: check_storms
+        run: |
+          # Check if any high-severity storms detected
+          if [ -f /tmp/storm_chaser_active_storms.json ]; then
+            STORM_COUNT=$(cat /tmp/storm_chaser_active_storms.json | jq '.total_storms')
+            echo "storm_count=$STORM_COUNT" >> $GITHUB_OUTPUT
+
+            if [ "$STORM_COUNT" -gt 0 ]; then
+              echo "🚨 ALERT: $STORM_COUNT severe storms detected!"
+            fi
+          fi
+
+      - name: Trigger contractor alerts
+        if: steps.check_storms.outputs.storm_count > 0
+        env:
+          WEBHOOK_URL: ${{ secrets.ALERT_WEBHOOK_URL }}
+        run: |
+          # Send webhook to alert system
+          # This could trigger Cloudflare Worker or direct notifications
+          curl -X POST $WEBHOOK_URL \
+            -H "Content-Type: application/json" \
+            -d @/tmp/storm_chaser_active_storms.json
+
+      - name: Upload storm data as artifact
+        if: steps.check_storms.outputs.storm_count > 0
+        uses: actions/upload-artifact@v3
+        with:
+          name: storm-data-${{ github.run_number }}
+          path: /tmp/storm_chaser_active_storms.json
+          retention-days: 7
